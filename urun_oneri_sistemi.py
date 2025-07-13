@@ -3,14 +3,20 @@ import numpy as np
 from mlxtend.frequent_patterns import apriori, association_rules
 from mlxtend.preprocessing import TransactionEncoder
 import warnings
+import gc  # Garbage collection için
 warnings.filterwarnings('ignore')
 
 def load_and_prepare_data(file_path):
     """
-    Excel dosyasını yükler ve veriyi hazırlar
+    Excel dosyasını yükler ve veriyi hazırlar - Memory efficient
     """
     try:
-        df = pd.read_excel(file_path)
+        print("Excel dosyası yükleniyor...")
+        
+        # Sadece gerekli sütunları yükle
+        usecols = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]  # İlk 10 sütun
+        
+        df = pd.read_excel(file_path, usecols=usecols)
         print(f"Veri yüklendi: {df.shape[0]} satır, {df.shape[1]} sütun")
         print("Sütunlar:", df.columns.tolist())
         
@@ -20,96 +26,125 @@ def load_and_prepare_data(file_path):
         if len(df.columns) >= len(expected_columns):
             df.columns = expected_columns[:len(df.columns)]
         
+        # Gereksiz sütunları kaldır (memory tasarrufu için)
+        columns_to_keep = ['cairkod', 'yil', 'aylik', 'deger', 'StockAd', 'segment', 'Ürün Grubu']
+        df = df[columns_to_keep].copy()
+        
+        # Null değerleri temizle
+        df = df.dropna(subset=['StockAd', 'segment', 'Ürün Grubu'])
+        
+        # Memory temizliği
+        gc.collect()
+        
+        print(f"Veri temizlendi: {df.shape[0]} satır kaldı")
         return df
+        
     except Exception as e:
         print(f"Veri yükleme hatası: {e}")
         return None
 
-def create_transaction_matrix(df):
+def create_transaction_matrix_by_segment(df, segment):
     """
-    Her bayi için transaction matrix oluşturur
+    Belirli bir segment için transaction matrix oluşturur - Memory efficient
     """
-    # Her bayi-ay kombinasyonu için ürün satışlarını al
-    transactions = df.groupby(['cairkod', 'segment', 'yil', 'aylik'])['StockAd'].apply(list).reset_index()
+    # Sadece ilgili segmenti filtrele
+    segment_df = df[df['segment'] == segment].copy()
     
-    # Ürün gruplarını da ekle
-    product_groups = df.groupby('StockAd')['Ürün Grubu'].first().to_dict()
+    # Her bayi-ay kombinasyonu için ürün satışlarını al
+    transactions = segment_df.groupby(['cairkod', 'yil', 'aylik'])['StockAd'].apply(list).reset_index()
+    transactions['segment'] = segment
+    
+    # Ürün gruplarını da ekle (sadece bu segment için)
+    product_groups = segment_df.groupby('StockAd')['Ürün Grubu'].first().to_dict()
+    
+    # Memory temizliği
+    del segment_df
+    gc.collect()
     
     return transactions, product_groups
 
-def run_apriori_by_segment(transactions, product_groups, min_support=0.03, min_confidence=0.5):
+def run_apriori_for_single_segment(transactions, product_groups, segment, min_support=0.03, min_confidence=0.5):
     """
-    Her segment için Apriori algoritmasını çalıştırır
+    Tek bir segment için Apriori algoritmasını çalıştırır - Memory efficient
     """
-    results = []
+    print(f"\n{segment} segmenti için Apriori algoritması çalıştırılıyor...")
     
-    segments = transactions['segment'].unique()
+    if len(transactions) < 10:  # Minimum transaction sayısı
+        print(f"{segment} segmenti için yeterli veri yok (min 10 transaction gerekli)")
+        return []
     
-    for segment in segments:
-        print(f"\n{segment} segmenti için Apriori algoritması çalıştırılıyor...")
-        
-        # Segment verilerini filtrele
-        segment_data = transactions[transactions['segment'] == segment]
-        
-        if len(segment_data) < 10:  # Minimum transaction sayısı
-            print(f"{segment} segmenti için yeterli veri yok (min 10 transaction gerekli)")
-            continue
-        
-        # Transaction encoder
-        te = TransactionEncoder()
-        te_ary = te.fit(segment_data['StockAd'].tolist()).transform(segment_data['StockAd'].tolist())
+    # Transaction encoder
+    te = TransactionEncoder()
+    product_lists = transactions['StockAd'].tolist()
+    
+    try:
+        te_ary = te.fit(product_lists).transform(product_lists)
         df_encoded = pd.DataFrame(te_ary, columns=te.columns_)
         
+        # Memory temizliği
+        del product_lists
+        gc.collect()
+        
         # Apriori algoritması
-        try:
-            frequent_itemsets = apriori(df_encoded, min_support=min_support, use_colnames=True)
+        frequent_itemsets = apriori(df_encoded, min_support=min_support, use_colnames=True, low_memory=True)
+        
+        # Memory temizliği
+        del df_encoded
+        gc.collect()
+        
+        if len(frequent_itemsets) == 0:
+            print(f"{segment} segmenti için frequent itemsets bulunamadı")
+            return []
+        
+        # Association rules
+        rules = association_rules(frequent_itemsets, 
+                                metric="confidence", 
+                                min_threshold=min_confidence)
+        
+        # Memory temizliği
+        del frequent_itemsets
+        gc.collect()
+        
+        if len(rules) == 0:
+            print(f"{segment} segmenti için rules bulunamadı")
+            return []
+        
+        # Aynı ürün grubu içindeki kuralları filtrele
+        filtered_rules = []
+        for _, rule in rules.iterrows():
+            antecedents = list(rule['antecedents'])
+            consequents = list(rule['consequents'])
             
-            if len(frequent_itemsets) == 0:
-                print(f"{segment} segmenti için frequent itemsets bulunamadı")
-                continue
+            # Ürün gruplarını kontrol et
+            ant_groups = set([product_groups.get(item, 'Unknown') for item in antecedents])
+            con_groups = set([product_groups.get(item, 'Unknown') for item in consequents])
             
-            # Association rules
-            rules = association_rules(frequent_itemsets, 
-                                    metric="confidence", 
-                                    min_threshold=min_confidence)
-            
-            if len(rules) == 0:
-                print(f"{segment} segmenti için rules bulunamadı")
-                continue
-            
-            # Aynı ürün grubu içindeki kuralları filtrele
-            filtered_rules = []
-            for _, rule in rules.iterrows():
-                antecedents = list(rule['antecedents'])
-                consequents = list(rule['consequents'])
-                
-                # Ürün gruplarını kontrol et
-                ant_groups = set([product_groups.get(item, 'Unknown') for item in antecedents])
-                con_groups = set([product_groups.get(item, 'Unknown') for item in consequents])
-                
-                # Farklı ürün gruplarından olanları al
-                if not ant_groups.intersection(con_groups):
-                    filtered_rules.append({
-                        'segment': segment,
-                        'antecedents': ', '.join(antecedents),
-                        'consequents': ', '.join(consequents),
-                        'antecedent_support': rule['antecedent support'],
-                        'consequent_support': rule['consequent support'],
-                        'support': rule['support'],
-                        'confidence': rule['confidence'],
-                        'lift': rule['lift'],
-                        'antecedent_groups': ', '.join(ant_groups),
-                        'consequent_groups': ', '.join(con_groups)
-                    })
-            
-            results.extend(filtered_rules)
-            print(f"{segment} segmenti için {len(filtered_rules)} kural bulundu")
-            
-        except Exception as e:
-            print(f"{segment} segmenti için hata: {e}")
-            continue
-    
-    return pd.DataFrame(results)
+            # Farklı ürün gruplarından olanları al
+            if not ant_groups.intersection(con_groups):
+                filtered_rules.append({
+                    'segment': segment,
+                    'antecedents': ', '.join(antecedents),
+                    'consequents': ', '.join(consequents),
+                    'antecedent_support': rule['antecedent support'],
+                    'consequent_support': rule['consequent support'],
+                    'support': rule['support'],
+                    'confidence': rule['confidence'],
+                    'lift': rule['lift'],
+                    'antecedent_groups': ', '.join(ant_groups),
+                    'consequent_groups': ', '.join(con_groups)
+                })
+        
+        print(f"{segment} segmenti için {len(filtered_rules)} kural bulundu")
+        
+        # Memory temizliği
+        del rules
+        gc.collect()
+        
+        return filtered_rules
+        
+    except Exception as e:
+        print(f"{segment} segmenti için hata: {e}")
+        return []
 
 def find_recommendation_opportunities(df, rules_df):
     """
@@ -243,27 +278,54 @@ def main():
     print(f"Segment sayısı: {df['segment'].nunique()}")
     print(f"Ürün grubu sayısı: {df['Ürün Grubu'].nunique()}")
     
-    # Transaction matrix oluştur
-    transactions, product_groups = create_transaction_matrix(df)
-    print(f"\nTransaction matrix hazırlandı: {len(transactions)} transaction")
+    # Segment listesini al
+    segments = df['segment'].unique()
+    print(f"\nSegmentler: {segments}")
     
-    # Apriori algoritmasını çalıştır
-    print("\nApriori algoritması çalıştırılıyor...")
-    rules_df = run_apriori_by_segment(transactions, product_groups, 
-                                     min_support=0.03, min_confidence=0.5)
+    # Her segment için Apriori algoritmasını çalıştır - Memory efficient
+    print("\nApriori algoritması segment segment çalıştırılıyor...")
+    all_rules = []
+    
+    for i, segment in enumerate(segments, 1):
+        print(f"\n--- {segment} segmenti işleniyor ({i}/{len(segments)}) ---")
+        
+        # Bu segment için transaction matrix oluştur
+        transactions, product_groups = create_transaction_matrix_by_segment(df, segment)
+        print(f"{segment} segmenti için {len(transactions)} transaction hazırlandı")
+        
+        # Bu segment için Apriori çalıştır
+        segment_rules = run_apriori_for_single_segment(transactions, product_groups, segment,
+                                                      min_support=0.03, min_confidence=0.5)
+        
+        all_rules.extend(segment_rules)
+        
+        # Memory temizliği
+        del transactions, product_groups, segment_rules
+        gc.collect()
+        
+        print(f"{segment} segmenti tamamlandı. Memory temizlendi. ({i}/{len(segments)} segment işlendi)")
+        print(f"Şimdiye kadar toplam {len(all_rules)} kural bulundu.")
+    
+    rules_df = pd.DataFrame(all_rules)
     
     print(f"\nToplam {len(rules_df)} kural bulundu")
     
     # Öneri fırsatlarını bul
     print("\nÖneri fırsatları araştırılıyor...")
-    recommendations_df = find_recommendation_opportunities(df, rules_df)
-    
-    print(f"Toplam {len(recommendations_df)} öneri fırsatı bulundu")
-    
-    # Satış birimlerini ekle
-    if not recommendations_df.empty:
-        print("\nSatış birimleri ekleniyor...")
-        recommendations_df = add_sales_units(recommendations_df, df)
+    if not rules_df.empty:
+        recommendations_df = find_recommendation_opportunities(df, rules_df)
+        print(f"Toplam {len(recommendations_df)} öneri fırsatı bulundu")
+        
+        # Satış birimlerini ekle
+        if not recommendations_df.empty:
+            print("\nSatış birimleri ekleniyor...")
+            recommendations_df = add_sales_units(recommendations_df, df)
+        
+        # Memory temizliği
+        gc.collect()
+    else:
+        print("Hiç kural bulunamadı, öneri analizi yapılamayacak.")
+        recommendations_df = pd.DataFrame()
     
     # Sonuçları Excel'e kaydet
     print("\nSonuçlar Excel dosyasına kaydediliyor...")
