@@ -211,18 +211,20 @@ def load_and_prepare_data_optimized(file_path, debug=False):
 
 def create_transactions_vectorized(segment_df, debug=False):
     """
-    Vectorized transaction oluşturma - VERİ ZATEN TEMİZLENDİ
+    Vectorized transaction oluşturma - ÜRÜN GRUPLARI İLE
     """
     start_time = log_performance("🔄 Transaction oluşturma başladı")
     
     # Veri zaten load_and_prepare_data_optimized'da temizlendi
-    # Ek kontrol sadece güvenlik için
     if debug:
         print(f"🔍 Segment veri kontrolü:")
         print(f"  - StockAd tipi: {segment_df['StockAd'].dtype}")
         print(f"  - Ürün Grubu tipi: {segment_df['Ürün Grubu'].dtype}")
         print(f"  - StockAd örnekleri: {segment_df['StockAd'].head().tolist()}")
+        print(f"  - Ürün Grubu örnekleri: {segment_df['Ürün Grubu'].head().tolist()}")
         print(f"  - NaN kontrolü: {segment_df[['StockAd', 'Ürün Grubu']].isnull().sum().to_dict()}")
+        print(f"  - Benzersiz ürün sayısı: {segment_df['StockAd'].nunique()}")
+        print(f"  - Benzersiz ürün grubu sayısı: {segment_df['Ürün Grubu'].nunique()}")
     
     # Son güvenlik kontrolü
     segment_df = segment_df[
@@ -236,29 +238,40 @@ def create_transactions_vectorized(segment_df, debug=False):
         log_performance("⚠️ Temizleme sonrası veri kalmadı")
         return [], {}
     
-    # Vectorized grouping - VERİ ZATEN STRING
-    grouped = segment_df.groupby(['carikod', 'yil', 'aylik'])['StockAd'].apply(
-        lambda x: x.tolist()  # Artık str() conversion'a gerek yok
+    # KRİTİK DEĞİŞİKLİK: ÜRÜN GRUBU İLE TRANSACTION OLUŞTUR
+    # StockAd yerine Ürün Grubu kullan!
+    grouped = segment_df.groupby(['carikod', 'yil', 'aylik'])['Ürün Grubu'].apply(
+        lambda x: list(set(x.tolist()))  # Benzersiz ürün grupları al
     ).reset_index()
     
     # Boş transaction'ları filtrele
     transactions_list = [
-        trans for trans in grouped['StockAd'].tolist()
+        trans for trans in grouped['Ürün Grubu'].tolist()
         if isinstance(trans, list) and len(trans) > 0
     ]
     
-    # Ürün gruplarını dictionary ile oluştur - VERİ ZATEN TEMİZ
-    product_groups = dict(zip(segment_df['StockAd'], segment_df['Ürün Grubu']))
+    # Ürün grupları için mapping - ürün grubu -> ürün grubu (aynı değer)
+    product_groups = {}
+    unique_groups = segment_df['Ürün Grubu'].unique()
+    for group in unique_groups:
+        product_groups[group] = group  # Ürün grubu kendine map oluyor
     
     if debug:
-        print(f"🔍 Transaction oluşturma sonucu:")
+        print(f"🔍 Transaction oluşturma sonucu (ÜRÜN GRUPLARI İLE):")
         print(f"  - Transaction sayısı: {len(transactions_list)}")
-        print(f"  - Product groups sayısı: {len(product_groups)}")
+        print(f"  - Benzersiz ürün grubu sayısı: {len(product_groups)}")
         if len(transactions_list) > 0:
-            print(f"  - İlk transaction: {transactions_list[0][:5]}")  # İlk 5 ürün
+            print(f"  - İlk transaction: {transactions_list[0]}")
         if len(product_groups) > 0:
-            first_items = list(product_groups.items())[:3]
+            first_items = list(product_groups.items())[:5]
             print(f"  - İlk product groups: {first_items}")
+        
+        # Transaction boyutları analizi
+        transaction_sizes = [len(trans) for trans in transactions_list]
+        if transaction_sizes:
+            print(f"  - Ortalama transaction boyutu: {sum(transaction_sizes)/len(transaction_sizes):.1f}")
+            print(f"  - En büyük transaction boyutu: {max(transaction_sizes)}")
+            print(f"  - En küçük transaction boyutu: {min(transaction_sizes)}")
     
     log_performance(f"✅ {len(transactions_list)} geçerli transaction oluşturuldu", start_time)
     
@@ -266,7 +279,7 @@ def create_transactions_vectorized(segment_df, debug=False):
 
 def filter_rules_vectorized(rules, product_groups, debug=False):
     """
-    Vectorized rule filtreleme - VERİ ZATEN STRING VE TEMİZ
+    Vectorized rule filtreleme - ÜRÜN GRUPLARI İLE ÇALIŞIR
     """
     start_time = log_performance("🔍 Rule filtreleme başladı")
     
@@ -277,13 +290,13 @@ def filter_rules_vectorized(rules, product_groups, debug=False):
             first_rule = rules.iloc[0]
             print(f"🔍 İlk rule antecedents tipi: {type(first_rule['antecedents'])}")
             print(f"🔍 İlk rule antecedents içeriği: {first_rule['antecedents']}")
-            print(f"🔍 Product groups sample: {list(product_groups.items())[:3]}")
+            print(f"🔍 Product groups sample: {list(product_groups.items())[:5]}")
     
     rules_list = []
     
     for idx, (_, rule) in enumerate(rules.iterrows()):
         try:
-            # frozenset'leri liste'ye çevir - VERİ ZATEN STRING
+            # frozenset'leri liste'ye çevir - ÜRÜN GRUPLARI ZATEN
             antecedents = list(rule['antecedents'])
             consequents = list(rule['consequents'])
             
@@ -296,30 +309,25 @@ def filter_rules_vectorized(rules, product_groups, debug=False):
                     print(f"⚠️ Rule {idx}: Boş antecedents veya consequents")
                 continue
             
-            # Ürün gruplarını bul - VERİ ZATEN TEMİZ
-            ant_groups = {product_groups.get(item, 'Unknown') for item in antecedents}
-            con_groups = {product_groups.get(item, 'Unknown') for item in consequents}
+            # ÜRÜN GRUPLARI İLE ÇALIŞIYORUZ - ARTIK FİLTRELEME YOK
+            # Çünkü zaten ürün grupları üzerinden analiz yapıyoruz
+            # Farklı gruplar arası ilişkileri istiyorsak, burada filtreleme yapabiliriz
+            # Şimdilik tüm kuralları kabul ediyoruz
             
-            # 'Unknown' grupları filtrele
-            ant_groups = {g for g in ant_groups if g != 'Unknown'}
-            con_groups = {g for g in con_groups if g != 'Unknown'}
+            rules_list.append({
+                'antecedents': ', '.join(antecedents),
+                'consequents': ', '.join(consequents),
+                'antecedent_support': rule['antecedent support'],
+                'consequent_support': rule['consequent support'],
+                'support': rule['support'],
+                'confidence': rule['confidence'],
+                'lift': rule['lift'],
+                'antecedent_groups': ', '.join(antecedents),  # Artık direkt ürün grubu
+                'consequent_groups': ', '.join(consequents)   # Artık direkt ürün grubu
+            })
             
-            # Farklı ürün gruplarından olanları al
-            if ant_groups and con_groups and not ant_groups.intersection(con_groups):
-                rules_list.append({
-                    'antecedents': ', '.join(antecedents),
-                    'consequents': ', '.join(consequents),
-                    'antecedent_support': rule['antecedent support'],
-                    'consequent_support': rule['consequent support'],
-                    'support': rule['support'],
-                    'confidence': rule['confidence'],
-                    'lift': rule['lift'],
-                    'antecedent_groups': ', '.join(ant_groups),
-                    'consequent_groups': ', '.join(con_groups)
-                })
-                
-                if debug and len(rules_list) <= 3:
-                    print(f"✅ Geçerli kural {len(rules_list)}: {antecedents} -> {consequents}")
+            if debug and len(rules_list) <= 3:
+                print(f"✅ Geçerli kural {len(rules_list)}: {antecedents} -> {consequents}")
         
         except Exception as e:
             if debug:
