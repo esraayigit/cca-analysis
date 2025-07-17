@@ -156,6 +156,14 @@ def filter_rules_vectorized(rules, product_groups, debug=False):
     """
     start_time = log_performance("🔍 Rule filtreleme başladı")
     
+    if debug:
+        print(f"🔍 Rules tipi: {type(rules)}")
+        print(f"🔍 Rules boyutu: {len(rules)}")
+        if len(rules) > 0:
+            first_rule = rules.iloc[0]
+            print(f"🔍 İlk rule antecedents tipi: {type(first_rule['antecedents'])}")
+            print(f"🔍 İlk rule antecedents içeriği: {first_rule['antecedents']}")
+    
     # Vectorized approach - pandas operations kullan
     rules_list = []
     
@@ -163,13 +171,52 @@ def filter_rules_vectorized(rules, product_groups, debug=False):
     antecedents_list = []
     consequents_list = []
     
-    for _, rule in rules.iterrows():
-        # frozenset'leri string listesine çevir
-        ant_items = [str(item) for item in rule['antecedents'] if str(item) != 'nan']
-        con_items = [str(item) for item in rule['consequents'] if str(item) != 'nan']
-        
-        antecedents_list.append(ant_items)
-        consequents_list.append(con_items)
+    for idx, (_, rule) in enumerate(rules.iterrows()):
+        try:
+            # frozenset'leri string listesine çevir - güvenli şekilde
+            if hasattr(rule['antecedents'], '__iter__'):
+                # frozenset veya set ise
+                ant_items = []
+                for item in rule['antecedents']:
+                    if pd.notna(item):  # NaN kontrolü
+                        str_item = str(item).strip()
+                        if str_item and str_item != 'nan':
+                            ant_items.append(str_item)
+            else:
+                # Tek item ise
+                if pd.notna(rule['antecedents']):
+                    str_item = str(rule['antecedents']).strip()
+                    ant_items = [str_item] if str_item and str_item != 'nan' else []
+                else:
+                    ant_items = []
+            
+            if hasattr(rule['consequents'], '__iter__'):
+                # frozenset veya set ise
+                con_items = []
+                for item in rule['consequents']:
+                    if pd.notna(item):  # NaN kontrolü
+                        str_item = str(item).strip()
+                        if str_item and str_item != 'nan':
+                            con_items.append(str_item)
+            else:
+                # Tek item ise
+                if pd.notna(rule['consequents']):
+                    str_item = str(rule['consequents']).strip()
+                    con_items = [str_item] if str_item and str_item != 'nan' else []
+                else:
+                    con_items = []
+            
+            antecedents_list.append(ant_items)
+            consequents_list.append(con_items)
+            
+            if debug and idx < 3:  # İlk 3 rule için debug
+                print(f"🔍 Rule {idx}: ant_items={ant_items}, con_items={con_items}")
+                
+        except Exception as e:
+            if debug:
+                print(f"⚠️ Rule {idx} işlenirken hata: {e}")
+            antecedents_list.append([])
+            consequents_list.append([])
     
     # Vectorized group checking
     for i, (_, rule) in enumerate(rules.iterrows()):
@@ -178,31 +225,48 @@ def filter_rules_vectorized(rules, product_groups, debug=False):
         
         # Boş listeler kontrolü
         if not antecedents or not consequents:
+            if debug and i < 5:
+                print(f"⚠️ Rule {i}: Boş antecedents ({len(antecedents)}) veya consequents ({len(consequents)})")
             continue
         
-        # Set operations kullan (hızlı)
-        ant_groups = {product_groups.get(str(item), 'Unknown') for item in antecedents}
-        con_groups = {product_groups.get(str(item), 'Unknown') for item in consequents}
+        try:
+            # Set operations kullan (hızlı)
+            ant_groups = {product_groups.get(str(item), 'Unknown') for item in antecedents}
+            con_groups = {product_groups.get(str(item), 'Unknown') for item in consequents}
+            
+            # 'Unknown' grupları filtrele
+            ant_groups = {g for g in ant_groups if g != 'Unknown'}
+            con_groups = {g for g in con_groups if g != 'Unknown'}
+            
+            # Farklı ürün gruplarından olanları al
+            if ant_groups and con_groups and not ant_groups.intersection(con_groups):
+                rules_list.append({
+                    'antecedents': ', '.join(antecedents),
+                    'consequents': ', '.join(consequents),
+                    'antecedent_support': rule['antecedent support'],
+                    'consequent_support': rule['consequent support'],
+                    'support': rule['support'],
+                    'confidence': rule['confidence'],
+                    'lift': rule['lift'],
+                    'antecedent_groups': ', '.join(ant_groups),
+                    'consequent_groups': ', '.join(con_groups)
+                })
+                
+                if debug and len(rules_list) <= 3:
+                    print(f"✅ Geçerli kural {len(rules_list)}: {antecedents} -> {consequents}")
         
-        # 'Unknown' grupları filtrele
-        ant_groups = {g for g in ant_groups if g != 'Unknown'}
-        con_groups = {g for g in con_groups if g != 'Unknown'}
-        
-        # Farklı ürün gruplarından olanları al
-        if ant_groups and con_groups and not ant_groups.intersection(con_groups):
-            rules_list.append({
-                'antecedents': ', '.join(antecedents),
-                'consequents': ', '.join(consequents),
-                'antecedent_support': rule['antecedent support'],
-                'consequent_support': rule['consequent support'],
-                'support': rule['support'],
-                'confidence': rule['confidence'],
-                'lift': rule['lift'],
-                'antecedent_groups': ', '.join(ant_groups),
-                'consequent_groups': ', '.join(con_groups)
-            })
+        except Exception as e:
+            if debug:
+                print(f"⚠️ Rule {i} grup kontrolünde hata: {e}")
+            continue
     
     log_performance(f"✅ {len(rules_list)} geçerli kural bulundu", start_time)
+    
+    if debug:
+        print(f"🔍 Toplam işlenen rule: {len(rules)}")
+        print(f"🔍 Geçerli kural sayısı: {len(rules_list)}")
+        if len(rules_list) > 0:
+            print(f"🔍 İlk geçerli kural: {rules_list[0]}")
     
     return rules_list
 
@@ -389,19 +453,34 @@ def main_memory_optimized(debug=False):
     segments = df['segment'].unique()
     log_performance(f"📋 Segmentler: {list(segments)}", summary_start)
     
-    # Her segment için işlem
+    # Her segment için işlem - DAHA DÜŞÜK PARAMETRELER
     all_rules = []
+    
+    # Test için daha düşük parametreler
+    test_support = 0.005  # %0.5 (çok düşük)
+    test_confidence = 0.1  # %10 (çok düşük)
+    
+    print(f"\n🔧 TEST PARAMETRELERİ:")
+    print(f"Min Support: {test_support} ({test_support*100:.1f}%)")
+    print(f"Min Confidence: {test_confidence} ({test_confidence*100:.1f}%)")
     
     for i, segment in enumerate(segments, 1):
         print(f"\n{'='*20} SEGMENT {i}/{len(segments)}: {segment} {'='*20}")
         
         segment_rules = process_segment_optimized(df, segment, 
-                                                min_support=0.03, 
-                                                min_confidence=0.5,
+                                                min_support=test_support, 
+                                                min_confidence=test_confidence,
                                                 debug=debug)
         
         all_rules.extend(segment_rules)
         log_performance(f"✅ {segment} tamamlandı. Toplam kural: {len(all_rules)}")
+        
+        # İlk segment'te kural bulunursa diğerlerine devam et
+        if i == 1 and len(segment_rules) > 0:
+            print(f"🎉 İLK SEGMENT'TE {len(segment_rules)} KURAL BULUNDU!")
+            print("Diğer segmentlere devam ediliyor...")
+        elif i == 1 and len(segment_rules) == 0:
+            print("⚠️ İlk segment'te kural bulunamadı, parametreler çok yüksek olabilir")
         
         gc.collect()
     
@@ -411,6 +490,22 @@ def main_memory_optimized(debug=False):
     if len(all_rules) == 0:
         log_performance("⚠️ Hiç kural bulunamadı - boş DataFrame oluşturuluyor")
         rules_df = pd.DataFrame()
+        
+        # Neden kural bulunamadığına dair analiz
+        print(f"\n🔍 KURAL BULUNAMAMA ANALİZİ:")
+        
+        # Her segment için temel istatistikler
+        for segment in segments[:3]:  # İlk 3 segment
+            seg_df = df[df['segment'] == segment]
+            print(f"\n📊 {segment} Analizi:")
+            print(f"  - Satır sayısı: {len(seg_df):,}")
+            print(f"  - Unique ürün sayısı: {seg_df['StockAd'].nunique()}")
+            print(f"  - Unique bayi sayısı: {seg_df['carikod'].nunique()}")
+            
+            # Transaction sayısı tahmini
+            transactions = seg_df.groupby(['carikod', 'yil', 'aylik']).size()
+            print(f"  - Tahmini transaction sayısı: {len(transactions)}")
+            print(f"  - Ortalama ürün/transaction: {len(seg_df) / max(len(transactions), 1):.1f}")
     else:
         rules_df = pd.DataFrame(all_rules)
         rules_df = rules_df.sort_values(by='support', ascending=False).head(5000)
