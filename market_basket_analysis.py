@@ -76,6 +76,17 @@ def load_and_prepare_data_optimized(file_path, debug=False):
         
         log_performance(f"✅ Veri yüklendi: {df.shape[0]} satır, {df.shape[1]} sütun", load_start)
         
+        # ORIJINAL VERI ANALIZI
+        if debug:
+            print(f"\n🔍 ORIJINAL VERİ ANALİZİ:")
+            print(f"Sütunlar: {list(df.columns)}")
+            if len(df.columns) > 9:  # Ürün Grubu sütunu varsa
+                orig_col = df.columns[9]  # Son sütun genellikle Ürün Grubu
+                print(f"Son sütun (Ürün Grubu?): '{orig_col}'")
+                print(f"Son sütun tipi: {df[orig_col].dtype}")
+                print(f"Son sütun benzersiz değer sayısı: {df[orig_col].nunique()}")
+                print(f"Son sütun örnek değerleri: {df[orig_col].dropna().unique()[:10].tolist()}")
+        
         # Sütun standardizasyonu
         prep_start = time.time()
         expected_columns = ['carikod', 'yil', 'aylik', 'cirokod_aylik', 'ciro_degeri', 'StockAd','segment', 'StockId','StockKod','Ürün Grubu']
@@ -85,6 +96,29 @@ def load_and_prepare_data_optimized(file_path, debug=False):
         
         columns_to_keep = ['carikod', 'yil', 'aylik', 'StockAd','segment', 'StockId','StockKod','Ürün Grubu']
         df = df[columns_to_keep].copy()
+        
+        # ÜRÜN GRUBU ANALİZİ - CLEANING ÖNCESI
+        if debug:
+            print(f"\n🔍 ÜRÜN GRUBU ANALİZİ (CLEANING ÖNCESI):")
+            print(f"'Ürün Grubu' sütunu tipi: {df['Ürün Grubu'].dtype}")
+            print(f"'Ürün Grubu' benzersiz değer sayısı: {df['Ürün Grubu'].nunique()}")
+            print(f"'Ürün Grubu' NaN sayısı: {df['Ürün Grubu'].isnull().sum()}")
+            
+            # Sayısal mı kontrol et
+            numeric_groups = pd.to_numeric(df['Ürün Grubu'], errors='coerce').notna().sum()
+            print(f"Sayısal görünen değer sayısı: {numeric_groups}")
+            
+            # Unique değerlerin örnekleri
+            unique_groups = df['Ürün Grubu'].dropna().unique()
+            print(f"İlk 20 benzersiz ürün grubu:")
+            for i, group in enumerate(unique_groups[:20], 1):
+                print(f"  {i:2d}. '{group}' (tip: {type(group).__name__})")
+            
+            # Value counts
+            print(f"\nEn çok kullanılan ürün grupları:")
+            top_groups = df['Ürün Grubu'].value_counts().head(10)
+            for group, count in top_groups.items():
+                print(f"  '{group}': {count:,} adet")
         
         # KRİTİK: ÜRÜN ADLARINI STRING'E ÇEVİR VE TEMİZLE
         log_performance("🔧 Ürün adları string'e çevriliyor...")
@@ -125,6 +159,29 @@ def load_and_prepare_data_optimized(file_path, debug=False):
         # 6. Son kontrol - numeric conversion hatalarını temizle
         df = df.dropna(subset=['yil', 'aylik'])
         
+        # ÜRÜN GRUBU ANALİZİ - CLEANING SONRASI
+        if debug:
+            print(f"\n🔍 ÜRÜN GRUBU ANALİZİ (CLEANING SONRASI):")
+            print(f"'Ürün Grubu' benzersiz değer sayısı: {df['Ürün Grubu'].nunique()}")
+            
+            # Segment 6 özel analizi
+            segment6_df = df[df['segment'] == 'Segment 6']
+            print(f"\n🎯 SEGMENT 6 ÖZEL ANALİZİ:")
+            print(f"Segment 6 satır sayısı: {len(segment6_df):,}")
+            print(f"Segment 6 benzersiz ürün sayısı: {segment6_df['StockAd'].nunique()}")
+            print(f"Segment 6 benzersiz ürün grubu sayısı: {segment6_df['Ürün Grubu'].nunique()}")
+            
+            # Segment 6 ürün grupları
+            seg6_groups = segment6_df['Ürün Grubu'].value_counts()
+            print(f"Segment 6 tüm ürün grupları: {dict(seg6_groups)}")
+            
+            # Ürün grubu-ürün ilişkisi örnekleri
+            print(f"\n🔗 ÜRÜN GRUBU - ÜRÜN İLİŞKİSİ ÖRNEKLERİ (Segment 6):")
+            sample_products = segment6_df[['StockAd', 'Ürün Grubu']].drop_duplicates().head(10)
+            for _, row in sample_products.iterrows():
+                ürün_adı = row['StockAd'][:50] + "..." if len(row['StockAd']) > 50 else row['StockAd']
+                print(f"  Ürün: '{ürün_adı}' -> Grup: '{row['Ürün Grubu']}'")
+        
         # Temizleme sonrası kontrol
         initial_rows = len(df)
         
@@ -132,7 +189,7 @@ def load_and_prepare_data_optimized(file_path, debug=False):
         
         # Debug: Veri tiplerini kontrol et
         if debug:
-            print(f"🔍 VERİ TİPİ KONTROLÜ:")
+            print(f"\n🔍 VERİ TİPİ KONTROLÜ:")
             print(f"StockAd tipi: {df['StockAd'].dtype}")
             print(f"segment tipi: {df['segment'].dtype}")
             print(f"Ürün Grubu tipi: {df['Ürün Grubu'].dtype}")
