@@ -50,7 +50,7 @@ def log_performance(message, start_time=None):
 @timing_decorator
 def load_and_prepare_data_optimized(file_path, debug=False):
     """
-    Excel dosyasını memory-efficient şekilde yükler
+    Excel dosyasını memory-efficient şekilde yükler ve VERİ TİPLERİNİ DÜZELTIR
     """
     start_time = log_performance("📂 Veri yükleme başladı")
     
@@ -86,18 +86,62 @@ def load_and_prepare_data_optimized(file_path, debug=False):
         columns_to_keep = ['carikod', 'yil', 'aylik', 'StockAd','segment', 'StockId','StockKod','Ürün Grubu']
         df = df[columns_to_keep].copy()
         
-        # Veri tipi optimizasyonu
-        df['carikod'] = df['carikod'].astype('category')
-        df['segment'] = df['segment'].astype('category')
-        df['Ürün Grubu'] = df['Ürün Grubu'].astype('category')
-        df['yil'] = df['yil'].astype('int16')
-        df['aylik'] = df['aylik'].astype('int8')
+        # KRİTİK: ÜRÜN ADLARINI STRING'E ÇEVİR VE TEMİZLE
+        log_performance("🔧 Ürün adları string'e çevriliyor...")
         
-        # Temizleme
-        initial_rows = len(df)
+        # 1. NaN değerleri temizle
         df = df.dropna(subset=['StockAd', 'segment', 'Ürün Grubu'])
         
-        log_performance(f"🧹 Veri temizlendi: {initial_rows} -> {df.shape[0]} satır", prep_start)
+        # 2. Tüm kritik sütunları string'e çevir
+        df['StockAd'] = df['StockAd'].astype(str).str.strip()
+        df['segment'] = df['segment'].astype(str).str.strip()
+        df['Ürün Grubu'] = df['Ürün Grubu'].astype(str).str.strip()
+        
+        # 3. 'nan' string'lerini temizle
+        df = df[
+            (df['StockAd'] != 'nan') & 
+            (df['StockAd'] != 'None') & 
+            (df['StockAd'] != '') &
+            (df['segment'] != 'nan') & 
+            (df['segment'] != 'None') & 
+            (df['segment'] != '') &
+            (df['Ürün Grubu'] != 'nan') & 
+            (df['Ürün Grubu'] != 'None') & 
+            (df['Ürün Grubu'] != '')
+        ]
+        
+        # 4. Boş veya sadece whitespace olan değerleri temizle
+        df = df[
+            (df['StockAd'].str.len() > 0) &
+            (df['segment'].str.len() > 0) &
+            (df['Ürün Grubu'].str.len() > 0)
+        ]
+        
+        # 5. Veri tipi optimizasyonu - ÇOK ÖNEM
+        df['carikod'] = df['carikod'].astype(str)  # Bu da string olsun
+        df['yil'] = pd.to_numeric(df['yil'], errors='coerce').astype('int16')
+        df['aylik'] = pd.to_numeric(df['aylik'], errors='coerce').astype('int8')
+        
+        # 6. Son kontrol - numeric conversion hatalarını temizle
+        df = df.dropna(subset=['yil', 'aylik'])
+        
+        # Temizleme sonrası kontrol
+        initial_rows = len(df)
+        
+        log_performance(f"🧹 Veri temizlendi ve string'e çevrildi: {df.shape[0]} satır", prep_start)
+        
+        # Debug: Veri tiplerini kontrol et
+        if debug:
+            print(f"🔍 VERİ TİPİ KONTROLÜ:")
+            print(f"StockAd tipi: {df['StockAd'].dtype}")
+            print(f"segment tipi: {df['segment'].dtype}")
+            print(f"Ürün Grubu tipi: {df['Ürün Grubu'].dtype}")
+            print(f"StockAd örnekleri: {df['StockAd'].head().tolist()}")
+            print(f"Unique StockAd sayısı: {df['StockAd'].nunique()}")
+            
+            # NaN kontrolü
+            nan_check = df[['StockAd', 'segment', 'Ürün Grubu']].isnull().sum()
+            print(f"NaN sayıları: {nan_check.to_dict()}")
         
         gc.collect()
         log_performance("✅ Veri hazırlama tamamlandı", start_time)
@@ -110,26 +154,34 @@ def load_and_prepare_data_optimized(file_path, debug=False):
 
 def create_transactions_vectorized(segment_df, debug=False):
     """
-    Vectorized transaction oluşturma (FOR döngüsü yerine) - NaN handling eklendi
+    Vectorized transaction oluşturma - VERİ ZATEN TEMİZLENDİ
     """
     start_time = log_performance("🔄 Transaction oluşturma başladı")
     
-    # NaN değerleri temizle ve string'e çevir
-    segment_df = segment_df.dropna(subset=['StockAd', 'Ürün Grubu']).copy()
+    # Veri zaten load_and_prepare_data_optimized'da temizlendi
+    # Ek kontrol sadece güvenlik için
+    if debug:
+        print(f"🔍 Segment veri kontrolü:")
+        print(f"  - StockAd tipi: {segment_df['StockAd'].dtype}")
+        print(f"  - Ürün Grubu tipi: {segment_df['Ürün Grubu'].dtype}")
+        print(f"  - StockAd örnekleri: {segment_df['StockAd'].head().tolist()}")
+        print(f"  - NaN kontrolü: {segment_df[['StockAd', 'Ürün Grubu']].isnull().sum().to_dict()}")
     
-    # StockAd ve Ürün Grubu'nu string'e çevir
-    segment_df['StockAd'] = segment_df['StockAd'].astype(str)
-    segment_df['Ürün Grubu'] = segment_df['Ürün Grubu'].astype(str)
-    
-    # 'nan' string'lerini temizle
+    # Son güvenlik kontrolü
     segment_df = segment_df[
-        (segment_df['StockAd'] != 'nan') & 
-        (segment_df['Ürün Grubu'] != 'nan')
-    ]
+        (segment_df['StockAd'].notna()) & 
+        (segment_df['Ürün Grubu'].notna()) &
+        (segment_df['StockAd'] != '') &
+        (segment_df['Ürün Grubu'] != '')
+    ].copy()
     
-    # Vectorized grouping - FOR döngüsü yerine
+    if len(segment_df) == 0:
+        log_performance("⚠️ Temizleme sonrası veri kalmadı")
+        return [], {}
+    
+    # Vectorized grouping - VERİ ZATEN STRING
     grouped = segment_df.groupby(['carikod', 'yil', 'aylik'])['StockAd'].apply(
-        lambda x: [str(item) for item in x.tolist() if str(item) != 'nan']
+        lambda x: x.tolist()  # Artık str() conversion'a gerek yok
     ).reset_index()
     
     # Boş transaction'ları filtrele
@@ -138,13 +190,18 @@ def create_transactions_vectorized(segment_df, debug=False):
         if isinstance(trans, list) and len(trans) > 0
     ]
     
-    # Ürün gruplarını dictionary comprehension ile oluştur (NaN kontrolü ile)
-    product_groups = {}
-    for stock, group in zip(segment_df['StockAd'], segment_df['Ürün Grubu']):
-        stock_str = str(stock)
-        group_str = str(group)
-        if stock_str != 'nan' and group_str != 'nan':
-            product_groups[stock_str] = group_str
+    # Ürün gruplarını dictionary ile oluştur - VERİ ZATEN TEMİZ
+    product_groups = dict(zip(segment_df['StockAd'], segment_df['Ürün Grubu']))
+    
+    if debug:
+        print(f"🔍 Transaction oluşturma sonucu:")
+        print(f"  - Transaction sayısı: {len(transactions_list)}")
+        print(f"  - Product groups sayısı: {len(product_groups)}")
+        if len(transactions_list) > 0:
+            print(f"  - İlk transaction: {transactions_list[0][:5]}")  # İlk 5 ürün
+        if len(product_groups) > 0:
+            first_items = list(product_groups.items())[:3]
+            print(f"  - İlk product groups: {first_items}")
     
     log_performance(f"✅ {len(transactions_list)} geçerli transaction oluşturuldu", start_time)
     
@@ -152,7 +209,7 @@ def create_transactions_vectorized(segment_df, debug=False):
 
 def filter_rules_vectorized(rules, product_groups, debug=False):
     """
-    Vectorized rule filtreleme (FOR döngüsü yerine) - String handling düzeltildi
+    Vectorized rule filtreleme - VERİ ZATEN STRING VE TEMİZ
     """
     start_time = log_performance("🔍 Rule filtreleme başladı")
     
@@ -163,76 +220,28 @@ def filter_rules_vectorized(rules, product_groups, debug=False):
             first_rule = rules.iloc[0]
             print(f"🔍 İlk rule antecedents tipi: {type(first_rule['antecedents'])}")
             print(f"🔍 İlk rule antecedents içeriği: {first_rule['antecedents']}")
+            print(f"🔍 Product groups sample: {list(product_groups.items())[:3]}")
     
-    # Vectorized approach - pandas operations kullan
     rules_list = []
-    
-    # Rules'ı liste olarak hazırla - frozenset'i string'e çevir
-    antecedents_list = []
-    consequents_list = []
     
     for idx, (_, rule) in enumerate(rules.iterrows()):
         try:
-            # frozenset'leri string listesine çevir - güvenli şekilde
-            if hasattr(rule['antecedents'], '__iter__'):
-                # frozenset veya set ise
-                ant_items = []
-                for item in rule['antecedents']:
-                    if pd.notna(item):  # NaN kontrolü
-                        str_item = str(item).strip()
-                        if str_item and str_item != 'nan':
-                            ant_items.append(str_item)
-            else:
-                # Tek item ise
-                if pd.notna(rule['antecedents']):
-                    str_item = str(rule['antecedents']).strip()
-                    ant_items = [str_item] if str_item and str_item != 'nan' else []
-                else:
-                    ant_items = []
+            # frozenset'leri liste'ye çevir - VERİ ZATEN STRING
+            antecedents = list(rule['antecedents'])
+            consequents = list(rule['consequents'])
             
-            if hasattr(rule['consequents'], '__iter__'):
-                # frozenset veya set ise
-                con_items = []
-                for item in rule['consequents']:
-                    if pd.notna(item):  # NaN kontrolü
-                        str_item = str(item).strip()
-                        if str_item and str_item != 'nan':
-                            con_items.append(str_item)
-            else:
-                # Tek item ise
-                if pd.notna(rule['consequents']):
-                    str_item = str(rule['consequents']).strip()
-                    con_items = [str_item] if str_item and str_item != 'nan' else []
-                else:
-                    con_items = []
+            if debug and idx < 3:
+                print(f"🔍 Rule {idx}: antecedents={antecedents}, consequents={consequents}")
             
-            antecedents_list.append(ant_items)
-            consequents_list.append(con_items)
+            # Boş listeler kontrolü
+            if not antecedents or not consequents:
+                if debug and idx < 5:
+                    print(f"⚠️ Rule {idx}: Boş antecedents veya consequents")
+                continue
             
-            if debug and idx < 3:  # İlk 3 rule için debug
-                print(f"🔍 Rule {idx}: ant_items={ant_items}, con_items={con_items}")
-                
-        except Exception as e:
-            if debug:
-                print(f"⚠️ Rule {idx} işlenirken hata: {e}")
-            antecedents_list.append([])
-            consequents_list.append([])
-    
-    # Vectorized group checking
-    for i, (_, rule) in enumerate(rules.iterrows()):
-        antecedents = antecedents_list[i]
-        consequents = consequents_list[i]
-        
-        # Boş listeler kontrolü
-        if not antecedents or not consequents:
-            if debug and i < 5:
-                print(f"⚠️ Rule {i}: Boş antecedents ({len(antecedents)}) veya consequents ({len(consequents)})")
-            continue
-        
-        try:
-            # Set operations kullan (hızlı)
-            ant_groups = {product_groups.get(str(item), 'Unknown') for item in antecedents}
-            con_groups = {product_groups.get(str(item), 'Unknown') for item in consequents}
+            # Ürün gruplarını bul - VERİ ZATEN TEMİZ
+            ant_groups = {product_groups.get(item, 'Unknown') for item in antecedents}
+            con_groups = {product_groups.get(item, 'Unknown') for item in consequents}
             
             # 'Unknown' grupları filtrele
             ant_groups = {g for g in ant_groups if g != 'Unknown'}
@@ -257,7 +266,9 @@ def filter_rules_vectorized(rules, product_groups, debug=False):
         
         except Exception as e:
             if debug:
-                print(f"⚠️ Rule {i} grup kontrolünde hata: {e}")
+                print(f"⚠️ Rule {idx} işlenirken hata: {e}")
+                print(f"  - Antecedents tipi: {type(rule['antecedents'])}")
+                print(f"  - Consequents tipi: {type(rule['consequents'])}")
             continue
     
     log_performance(f"✅ {len(rules_list)} geçerli kural bulundu", start_time)
@@ -423,20 +434,21 @@ def create_recommendations_vectorized(rules_df, df, debug=False):
     return recommendations
 
 @timing_decorator
-def main_memory_optimized(debug=False):
+def main_memory_optimized(debug=True):  # Debug default olarak True yap
     """
-    Memory-optimized ana fonksiyon
+    Memory-optimized ana fonksiyon - VERİ TİPİ SORUNLARI ÇÖZÜLDÜ
     """
     file_path = "/Users/esranuryigit/Desktop/BirliktelikAnalizi_Filtresiz.xlsx"
     output_path = "/Users/esranuryigit/Desktop/urun_onerileri_sonuc_optimized.xlsx"
     
     print("=== PERFORMANCE-OPTIMIZED ÜRÜN ÖNERİ SİSTEMİ ===")
+    print("=== VERİ TİPİ SORUNLARI ÇÖZÜLDÜ ===")
     print("=" * 60)
     
     main_start = time.time()
     log_performance("🚀 Ana süreç başladı")
     
-    # Veriyi yükle
+    # Veriyi yükle - artık veri tipleri düzgün
     df = load_and_prepare_data_optimized(file_path, debug)
     if df is None:
         return
@@ -453,36 +465,50 @@ def main_memory_optimized(debug=False):
     segments = df['segment'].unique()
     log_performance(f"📋 Segmentler: {list(segments)}", summary_start)
     
-    # Her segment için işlem - DAHA DÜŞÜK PARAMETRELER
+    # Her segment için işlem - MANTIKLI PARAMETRELER
     all_rules = []
     
-    # Test için daha düşük parametreler
-    test_support = 0.005  # %0.5 (çok düşük)
-    test_confidence = 0.1  # %10 (çok düşük)
+    # İlk test için makul parametreler
+    test_support = 0.01  # %1 - daha mantıklı
+    test_confidence = 0.3  # %30 - daha mantıklı
     
     print(f"\n🔧 TEST PARAMETRELERİ:")
     print(f"Min Support: {test_support} ({test_support*100:.1f}%)")
     print(f"Min Confidence: {test_confidence} ({test_confidence*100:.1f}%)")
     
-    for i, segment in enumerate(segments, 1):
-        print(f"\n{'='*20} SEGMENT {i}/{len(segments)}: {segment} {'='*20}")
+    # İlk sadece 1 segment ile test et
+    test_segment = segments[0] if len(segments) > 0 else None
+    
+    if test_segment:
+        print(f"\n🧪 TEST: Sadece '{test_segment}' segmenti işleniyor...")
         
-        segment_rules = process_segment_optimized(df, segment, 
+        segment_rules = process_segment_optimized(df, test_segment, 
                                                 min_support=test_support, 
                                                 min_confidence=test_confidence,
                                                 debug=debug)
         
         all_rules.extend(segment_rules)
-        log_performance(f"✅ {segment} tamamlandı. Toplam kural: {len(all_rules)}")
         
-        # İlk segment'te kural bulunursa diğerlerine devam et
-        if i == 1 and len(segment_rules) > 0:
-            print(f"🎉 İLK SEGMENT'TE {len(segment_rules)} KURAL BULUNDU!")
+        if len(segment_rules) > 0:
+            print(f"🎉 TEST BAŞARILI! {len(segment_rules)} kural bulundu!")
             print("Diğer segmentlere devam ediliyor...")
-        elif i == 1 and len(segment_rules) == 0:
-            print("⚠️ İlk segment'te kural bulunamadı, parametreler çok yüksek olabilir")
-        
-        gc.collect()
+            
+            # Başarılıysa diğer segmentleri de işle
+            for i, segment in enumerate(segments[1:], 2):
+                print(f"\n{'='*20} SEGMENT {i}/{len(segments)}: {segment} {'='*20}")
+                
+                segment_rules = process_segment_optimized(df, segment, 
+                                                        min_support=test_support, 
+                                                        min_confidence=test_confidence,
+                                                        debug=False)  # Diğerleri için debug kapalı
+                
+                all_rules.extend(segment_rules)
+                log_performance(f"✅ {segment} tamamlandı. Toplam kural: {len(all_rules)}")
+                
+                gc.collect()
+        else:
+            print("⚠️ TEST BAŞARISIZ! İlk segment'te kural bulunamadı")
+            print("Parametreler çok yüksek olabilir veya veri problemi var")
     
     # Sonuçları DataFrame'e çevir
     df_creation_start = time.time()
@@ -506,6 +532,10 @@ def main_memory_optimized(debug=False):
             transactions = seg_df.groupby(['carikod', 'yil', 'aylik']).size()
             print(f"  - Tahmini transaction sayısı: {len(transactions)}")
             print(f"  - Ortalama ürün/transaction: {len(seg_df) / max(len(transactions), 1):.1f}")
+            
+            # En çok satılan ürünler
+            top_products = seg_df['StockAd'].value_counts().head(5)
+            print(f"  - En çok satılan ürünler: {top_products.to_dict()}")
     else:
         rules_df = pd.DataFrame(all_rules)
         rules_df = rules_df.sort_values(by='support', ascending=False).head(5000)
