@@ -446,7 +446,7 @@ def process_segment_optimized(df, segment, min_support=0.03, min_confidence=0.5,
 
 def create_recommendations_vectorized(rules_df, df, debug=False):
     """
-    Vectorized recommendation generation - TÜM SEGMENTLER DESTEKLİ
+    Vectorized recommendation generation - SEGMENT BAZLI
     """
     start_time = log_performance("💡 Öneriler hesaplanıyor")
     
@@ -459,15 +459,7 @@ def create_recommendations_vectorized(rules_df, df, debug=False):
     # Vectorized grouping - FOR döngüsü yerine
     prep_start = time.time()
     sales_by_distributor = last_month_data.groupby('carikod')['StockAd'].apply(set).to_dict()
-    
-    # TÜM_SEGMENTLER ise segment filtrelemesi yapma
-    if 'TÜM_SEGMENTLER' in rules_df['segment'].values:
-        # Tüm bayiler kullanılacak
-        all_distributors = set(df['carikod'].unique())
-        segment_distributors = {'TÜM_SEGMENTLER': all_distributors}
-    else:
-        # Normal segment bazlı çalışma
-        segment_distributors = df.groupby('segment')['carikod'].apply(set).to_dict()
+    segment_distributors = df.groupby('segment')['carikod'].apply(set).to_dict()
     
     log_performance(f"📊 Öneri hazırlıkları tamamlandı", prep_start)
     
@@ -520,13 +512,13 @@ def create_recommendations_vectorized(rules_df, df, debug=False):
 @timing_decorator
 def main_memory_optimized(debug=True):  # Debug default olarak True yap
     """
-    Memory-optimized ana fonksiyon - TÜM SEGMENTLER BİRLİKTE AYLIK ANALİZ
+    Memory-optimized ana fonksiyon - SEGMENT BAZLI ANALİZ
     """
     file_path = "/Users/esranuryigit/Desktop/BirliktelikAnalizi_Filtresiz.xlsx"
     output_path = "/Users/esranuryigit/Desktop/urun_onerileri_sonuc_optimized.xlsx"
     
     print("=== PERFORMANCE-OPTIMIZED ÜRÜN ÖNERİ SİSTEMİ ===")
-    print("=== TÜM SEGMENTLER BİRLİKTE AYLIK ANALİZ ===")
+    print("=== SEGMENT BAZLI AYLIK ANALİZ ===")
     print("=" * 60)
     
     main_start = time.time()
@@ -549,8 +541,8 @@ def main_memory_optimized(debug=True):  # Debug default olarak True yap
     segments = df['segment'].unique()
     log_performance(f"📋 Segmentler: {list(segments)}", summary_start)
     
-    # TÜM SEGMENTLER BİRLİKTE AYLIK ANALİZ
-    print(f"\n🎯 TÜM SEGMENTLER BİRLİKTE İŞLENİYOR...")
+    # HER SEGMENT KENDI İÇİNDE ANALİZ
+    all_rules = []
     
     # İlk test için makul parametreler
     test_support = 0.01  # %1 - daha mantıklı
@@ -559,16 +551,21 @@ def main_memory_optimized(debug=True):  # Debug default olarak True yap
     print(f"\n🔧 PARAMETRE AYARLARI:")
     print(f"Min Support: {test_support} ({test_support*100:.1f}%)")
     print(f"Min Confidence: {test_confidence} ({test_confidence*100:.1f}%)")
-    print(f"Analiz tipi: TÜM SEGMENTLER - AYLIK TRANSACTION")
+    print(f"Analiz tipi: SEGMENT BAZLI - AYLIK TRANSACTION")
     
-    # TÜM VERİ İLE SEGMENT-BAĞIMSIZ ANALİZ
-    segment_rules = process_segment_optimized(df, segment="TÜM_SEGMENTLER", 
-                                            min_support=test_support, 
-                                            min_confidence=test_confidence,
-                                            debug=debug)
-    
-    all_rules = segment_rules
-    log_performance(f"✅ Tüm segmentler tamamlandı. Toplam kural: {len(all_rules)}")
+    # Her segment için ayrı işlem
+    for i, segment in enumerate(segments, 1):
+        print(f"\n{'='*20} SEGMENT {i}/{len(segments)}: {segment} {'='*20}")
+        
+        segment_rules = process_segment_optimized(df, segment, 
+                                                min_support=test_support, 
+                                                min_confidence=test_confidence,
+                                                debug=(debug and i <= 2))  # İlk 2 segment için debug
+        
+        all_rules.extend(segment_rules)
+        log_performance(f"✅ {segment} tamamlandı. Toplam kural: {len(all_rules)}")
+        
+        gc.collect()
     
     # Sonuçları DataFrame'e çevir
     df_creation_start = time.time()
@@ -583,16 +580,18 @@ def main_memory_optimized(debug=True):  # Debug default olarak True yap
         print(f"Unique ürün sayısı: {df['StockAd'].nunique()}")
         print(f"Unique bayi sayısı: {df['carikod'].nunique()}")
         
-        # Transaction sayısı tahmini
-        transactions = df.groupby(['carikod', 'yil', 'aylik']).size()
-        print(f"Tahmini transaction sayısı: {len(transactions)}")
-        print(f"Ortalama ürün/transaction: {len(df) / max(len(transactions), 1):.1f}")
-        
-        # En çok satılan ürünler
-        top_products = df['StockAd'].value_counts().head(10)
-        print(f"En çok satılan ürünler:")
-        for product, count in top_products.items():
-            print(f"  {product[:50]}...: {count:,} adet")
+        # İlk 3 segment için detay analiz
+        for segment in segments[:3]:
+            seg_df = df[df['segment'] == segment]
+            print(f"\n📊 {segment} Analizi:")
+            print(f"  - Satır sayısı: {len(seg_df):,}")
+            print(f"  - Unique ürün sayısı: {seg_df['StockAd'].nunique()}")
+            print(f"  - Unique bayi sayısı: {seg_df['carikod'].nunique()}")
+            
+            # Transaction sayısı tahmini
+            transactions = seg_df.groupby(['carikod', 'yil', 'aylik']).size()
+            print(f"  - Tahmini transaction sayısı: {len(transactions)}")
+            print(f"  - Ortalama ürün/transaction: {len(seg_df) / max(len(transactions), 1):.1f}")
     else:
         rules_df = pd.DataFrame(all_rules)
         rules_df = rules_df.sort_values(by='support', ascending=False).head(5000)
