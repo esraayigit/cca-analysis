@@ -211,7 +211,7 @@ def load_and_prepare_data_optimized(file_path, debug=False):
 
 def create_transactions_vectorized(segment_df, debug=False):
     """
-    Vectorized transaction oluşturma - ÜRÜN GRUPLARI İLE
+    Vectorized transaction oluşturma - ÜRÜN ADLARI İLE (Doğru Yaklaşım)
     """
     start_time = log_performance("🔄 Transaction oluşturma başladı")
     
@@ -238,30 +238,26 @@ def create_transactions_vectorized(segment_df, debug=False):
         log_performance("⚠️ Temizleme sonrası veri kalmadı")
         return [], {}
     
-    # KRİTİK DEĞİŞİKLİK: ÜRÜN GRUBU İLE TRANSACTION OLUŞTUR
-    # StockAd yerine Ürün Grubu kullan!
-    grouped = segment_df.groupby(['carikod', 'yil', 'aylik'])['Ürün Grubu'].apply(
-        lambda x: list(set(x.tolist()))  # Benzersiz ürün grupları al
+    # ÜRÜN ADLARI İLE TRANSACTION OLUŞTUR (Orijinal yaklaşım)
+    grouped = segment_df.groupby(['carikod', 'yil', 'aylik'])['StockAd'].apply(
+        lambda x: x.tolist()  # Ürün adları listesi
     ).reset_index()
     
     # Boş transaction'ları filtrele
     transactions_list = [
-        trans for trans in grouped['Ürün Grubu'].tolist()
+        trans for trans in grouped['StockAd'].tolist()
         if isinstance(trans, list) and len(trans) > 0
     ]
     
-    # Ürün grupları için mapping - ürün grubu -> ürün grubu (aynı değer)
-    product_groups = {}
-    unique_groups = segment_df['Ürün Grubu'].unique()
-    for group in unique_groups:
-        product_groups[group] = group  # Ürün grubu kendine map oluyor
+    # ÜRÜN ADI -> ÜRÜN GRUBU mapping (Filtreleme için)
+    product_groups = dict(zip(segment_df['StockAd'], segment_df['Ürün Grubu']))
     
     if debug:
-        print(f"🔍 Transaction oluşturma sonucu (ÜRÜN GRUPLARI İLE):")
+        print(f"🔍 Transaction oluşturma sonucu (ÜRÜN ADLARI İLE):")
         print(f"  - Transaction sayısı: {len(transactions_list)}")
-        print(f"  - Benzersiz ürün grubu sayısı: {len(product_groups)}")
+        print(f"  - Benzersiz ürün sayısı: {len(product_groups)}")
         if len(transactions_list) > 0:
-            print(f"  - İlk transaction: {transactions_list[0]}")
+            print(f"  - İlk transaction: {transactions_list[0][:5]}")  # İlk 5 ürün
         if len(product_groups) > 0:
             first_items = list(product_groups.items())[:5]
             print(f"  - İlk product groups: {first_items}")
@@ -279,7 +275,7 @@ def create_transactions_vectorized(segment_df, debug=False):
 
 def filter_rules_vectorized(rules, product_groups, debug=False):
     """
-    Vectorized rule filtreleme - ÜRÜN GRUPLARI İLE ÇALIŞIR
+    Vectorized rule filtreleme - AYNI GRUP KURALLARINI FİLTRELE (Doğru Yaklaşım)
     """
     start_time = log_performance("🔍 Rule filtreleme başladı")
     
@@ -296,7 +292,7 @@ def filter_rules_vectorized(rules, product_groups, debug=False):
     
     for idx, (_, rule) in enumerate(rules.iterrows()):
         try:
-            # frozenset'leri liste'ye çevir - ÜRÜN GRUPLARI ZATEN
+            # frozenset'leri liste'ye çevir
             antecedents = list(rule['antecedents'])
             consequents = list(rule['consequents'])
             
@@ -309,25 +305,34 @@ def filter_rules_vectorized(rules, product_groups, debug=False):
                     print(f"⚠️ Rule {idx}: Boş antecedents veya consequents")
                 continue
             
-            # ÜRÜN GRUPLARI İLE ÇALIŞIYORUZ - ARTIK FİLTRELEME YOK
-            # Çünkü zaten ürün grupları üzerinden analiz yapıyoruz
-            # Farklı gruplar arası ilişkileri istiyorsak, burada filtreleme yapabiliriz
-            # Şimdilik tüm kuralları kabul ediyoruz
+            # ÜRÜN GRUPLARINI BUL
+            ant_groups = {product_groups.get(item, 'Unknown') for item in antecedents}
+            con_groups = {product_groups.get(item, 'Unknown') for item in consequents}
             
-            rules_list.append({
-                'antecedents': ', '.join(antecedents),
-                'consequents': ', '.join(consequents),
-                'antecedent_support': rule['antecedent support'],
-                'consequent_support': rule['consequent support'],
-                'support': rule['support'],
-                'confidence': rule['confidence'],
-                'lift': rule['lift'],
-                'antecedent_groups': ', '.join(antecedents),  # Artık direkt ürün grubu
-                'consequent_groups': ', '.join(consequents)   # Artık direkt ürün grubu
-            })
+            # 'Unknown' grupları filtrele
+            ant_groups = {g for g in ant_groups if g != 'Unknown'}
+            con_groups = {g for g in con_groups if g != 'Unknown'}
             
-            if debug and len(rules_list) <= 3:
-                print(f"✅ Geçerli kural {len(rules_list)}: {antecedents} -> {consequents}")
+            # FARKLI GRUP KONTROLÜ - AYNI GRUPTAN OLANLAR FİLTRELENSİN
+            if ant_groups and con_groups and not ant_groups.intersection(con_groups):
+                rules_list.append({
+                    'antecedents': ', '.join(antecedents),
+                    'consequents': ', '.join(consequents),
+                    'antecedent_support': rule['antecedent support'],
+                    'consequent_support': rule['consequent support'],
+                    'support': rule['support'],
+                    'confidence': rule['confidence'],
+                    'lift': rule['lift'],
+                    'antecedent_groups': ', '.join(sorted(ant_groups)),
+                    'consequent_groups': ', '.join(sorted(con_groups))
+                })
+                
+                if debug and len(rules_list) <= 3:
+                    print(f"✅ Geçerli kural {len(rules_list)}: {antecedents} -> {consequents}")
+                    print(f"   Gruplar: {ant_groups} -> {con_groups}")
+            else:
+                if debug and idx < 5:
+                    print(f"❌ Filtrelendi {idx}: Aynı grup - {ant_groups} ∩ {con_groups}")
         
         except Exception as e:
             if debug:
@@ -341,6 +346,7 @@ def filter_rules_vectorized(rules, product_groups, debug=False):
     if debug:
         print(f"🔍 Toplam işlenen rule: {len(rules)}")
         print(f"🔍 Geçerli kural sayısı: {len(rules_list)}")
+        print(f"🔍 Filtrelenen oran: {((len(rules) - len(rules_list))/len(rules)*100):.1f}%")
         if len(rules_list) > 0:
             print(f"🔍 İlk geçerli kural: {rules_list[0]}")
     
